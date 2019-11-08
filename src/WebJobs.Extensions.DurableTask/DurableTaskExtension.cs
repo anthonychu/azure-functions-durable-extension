@@ -452,6 +452,24 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
                     {
                         case EventType.ExecutionStarted:
                             entityShim.Rehydrate(runtimeState.Input);
+
+                            // If we are not locked by an orchestration, add any scheduled signals
+                            // whose due time has passed to the batch
+                            if (entityContext.State != null && entityContext.State.LockedBy == null)
+                            {
+                                while (entityContext.State.TryGetNextScheduledSignal(out var request))
+                                {
+                                    entityShim.AddOperationToBatch(request);
+                                }
+                            }
+
+                            break;
+
+                        case EventType.TimerFired:
+                            entityShim.TimerFiredToReceive = true;
+
+                            // the timer event itself is not processed by the entity - its purpose
+                            // was just to kick off a batch.
                             break;
 
                         case EventType.EventRaised:
@@ -476,7 +494,14 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
 
                                 foreach (var message in deliverNow)
                                 {
-                                    if (entityContext.State.LockedBy == message.ParentInstanceId)
+                                    if (message.ScheduledTime != null)
+                                    {
+                                        // message contains a signal that will be delivered only on its due time
+                                        // so we store it in the scheduled-signal-queue of the state
+                                        entityContext.State.AddScheduledSignal(message);
+                                    }
+                                    else if (message.ParentInstanceId != null
+                                             && entityContext.State.LockedBy == message.ParentInstanceId)
                                     {
                                         // operation requests from the lock holder are processed immediately
                                         entityShim.AddOperationToBatch(message);
@@ -504,6 +529,13 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
                                         isReplay: false);
 
                                     entityContext.State.LockedBy = null;
+
+                                    // now that we are no longer locked, add any scheduled signals
+                                    // whose due time has passed to the batch
+                                    while (entityContext.State.TryGetNextScheduledSignal(out var request))
+                                    {
+                                        entityShim.AddOperationToBatch(request);
+                                    }
                                 }
                             }
 
@@ -542,7 +574,7 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
                     {
                         entityShim.SetFunctionInvocationCallback(userCodeInvoker);
 
-                        // 3. Run all the operations in the batch
+                        // 4. Run all the operations in the batch
                         if (entityContext.InternalError == null)
                         {
                             try
@@ -555,11 +587,11 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
                             }
                         }
 
-                        // 4. Run the DTFx orchestration to persist the effects,
+                        // 5. Run the DTFx orchestration to persist the effects,
                         // send the outbox, and continue as new
                         await next();
 
-                        // 5. If there were internal or application errors, indicate to the functions host
+                        // 6. If there were internal or application errors, indicate to the functions host
                         entityContext.ThrowInternalExceptionIfAny();
                         entityContext.ThrowApplicationExceptionsIfAny();
                     },

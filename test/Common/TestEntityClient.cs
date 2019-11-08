@@ -32,9 +32,20 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask.Tests
             await this.InnerClient.SignalEntityAsync(this.entityId, operationName, operationContent);
         }
 
+        public async Task SignalEntity(
+            ITestOutputHelper output,
+            DateTime startTimeUtc,
+            string operationName,
+            object operationContent = null)
+        {
+            output.WriteLine($"Signaling entity {this.entityId} with operation named {operationName}.");
+            await this.InnerClient.SignalEntityAsync(this.entityId, startTimeUtc, operationName, operationContent);
+        }
+
         public async Task<T> WaitForEntityState<T>(
             ITestOutputHelper output,
-            TimeSpan? timeout = null)
+            TimeSpan? timeout = null,
+            Predicate<T> condition = null)
         {
             if (timeout == null)
             {
@@ -46,14 +57,25 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask.Tests
             EntityStateResponse<T> response;
             do
             {
-                output.WriteLine($"Waiting for {this.entityId} to have state.");
+                if (condition == null)
+                {
+                    output.WriteLine($"Waiting for {this.entityId} to have state.");
+                }
+                else
+                {
+                    output.WriteLine($"Waiting for {this.entityId} to have state satisfying the condition.");
+                }
 
                 response = await this.InnerClient.ReadEntityStateAsync<T>(this.entityId);
                 if (response.EntityExists)
                 {
                     string serializedState = JsonConvert.SerializeObject(response.EntityState);
                     output.WriteLine($"Found state: {serializedState}");
-                    return response.EntityState;
+
+                    if (condition == null || condition(response.EntityState))
+                    {
+                        return response.EntityState;
+                    }
                 }
 
                 await Task.Delay(TimeSpan.FromSeconds(1));

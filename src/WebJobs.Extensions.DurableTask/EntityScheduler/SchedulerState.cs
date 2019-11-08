@@ -1,6 +1,7 @@
 ﻿// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the MIT License. See LICENSE in the project root for license information.
 
+using System;
 using System.Collections.Generic;
 using Newtonsoft.Json;
 
@@ -28,6 +29,12 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
         /// </summary>
         [JsonProperty(PropertyName = "queue", DefaultValueHandling = DefaultValueHandling.Ignore)]
         public Queue<RequestMessage> Queue { get; private set; }
+
+        /// <summary>
+        /// Operations scheduled for execution at a specified time.
+        /// </summary>
+        [JsonProperty(PropertyName = "scheduled", DefaultValueHandling = DefaultValueHandling.Ignore)]
+        public SortedSet<RequestMessage> Scheduled { get; private set; }
 
         /// <summary>
         /// The instance id of the orchestration that currently holds the lock of this entity.
@@ -71,6 +78,59 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
             }
 
             return true;
+        }
+
+        internal void AddScheduledSignal(RequestMessage message)
+        {
+            System.Diagnostics.Debug.Assert(message.IsSignal && message.ScheduledTime != null, "request must be a scheduled signal");
+
+            if (this.Scheduled == null)
+            {
+                this.Scheduled = new SortedSet<RequestMessage>();
+            }
+
+            this.Scheduled.Add(message);
+        }
+
+        internal bool TryPeekNextSignalDueTime(out DateTime dueTime)
+        {
+            if (this.Scheduled == null)
+            {
+                dueTime = default(DateTime);
+                return false;
+            }
+            else
+            {
+                dueTime = this.Scheduled.Min.ScheduledTime.Value;
+                return true;
+            }
+        }
+
+        internal bool TryGetNextScheduledSignal(out RequestMessage operationMessage)
+        {
+            if (this.Scheduled == null)
+            {
+                operationMessage = null;
+                return false;
+            }
+
+            operationMessage = this.Scheduled.Min;
+
+            if (operationMessage.ScheduledTime < DateTime.UtcNow)
+            {
+                this.Scheduled.Remove(operationMessage);
+
+                if (this.Scheduled.Count == 0)
+                {
+                    this.Scheduled = null;
+                }
+
+                return true;
+            }
+            else
+            {
+                return false;
+            }
         }
 
         public override string ToString()

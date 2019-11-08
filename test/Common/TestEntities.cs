@@ -243,6 +243,19 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask.Tests
             }
         }
 
+        //-------------- An entity that records all operation names in a list -----------------
+
+        public static void SchedulerEntity(
+            [EntityTrigger(EntityName = "SchedulerEntity")] IDurableEntityContext context)
+        {
+            if (!context.HasState)
+            {
+                context.SetState(new List<string>());
+            }
+
+            context.GetState<List<string>>().Add(context.OperationName);
+        }
+
         //-------------- an entity that stores text, and whose state is
         //                  saved/restored to/from storage when the entity is deactivated/activated -----------------
         //

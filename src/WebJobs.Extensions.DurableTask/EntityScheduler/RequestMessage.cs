@@ -10,7 +10,7 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
     /// <summary>
     /// A message that represents an operation request or a lock request.
     /// </summary>
-    internal class RequestMessage
+    internal class RequestMessage : IComparable
     {
         /// <summary>
         /// The name of the operation being called (if this is an operation message) or <c>null</c>
@@ -42,6 +42,12 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
         /// </summary>
         [JsonProperty(PropertyName = "parent", DefaultValueHandling = DefaultValueHandling.Ignore)]
         public string ParentInstanceId { get; set; }
+
+        /// <summary>
+        /// Optionally, a scheduled time at which to start the operation.
+        /// </summary>
+        [JsonProperty(PropertyName = "due", DefaultValueHandling = DefaultValueHandling.Ignore)]
+        public DateTime? ScheduledTime { get; set; }
 
         /// <summary>
         /// A timestamp for this request.
@@ -123,6 +129,29 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
             else
             {
                 return $"[{(this.IsSignal ? "Signal" : "Call")} '{this.Operation}' operation {this.Id} by {this.ParentInstanceId}]";
+            }
+        }
+
+        // we use this ordering for scheduled signals only.
+        public int CompareTo(object obj)
+        {
+            if (!(obj is RequestMessage other)
+                || !this.ScheduledTime.HasValue
+                || !other.ScheduledTime.HasValue)
+            {
+                throw new InvalidOperationException("only scheduled requests can be sorted");
+            }
+
+            var result = this.ScheduledTime.Value.CompareTo(other.ScheduledTime.Value);
+
+            if (result != 0)
+            {
+                return result;
+            }
+            else
+            {
+                // break ties deterministically using the unique request id
+                return this.Id.CompareTo(other.Id);
             }
         }
     }

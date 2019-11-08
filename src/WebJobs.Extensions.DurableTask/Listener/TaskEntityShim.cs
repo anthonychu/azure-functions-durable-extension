@@ -3,6 +3,8 @@
 
 using System;
 using System.Collections.Generic;
+using System.Runtime.ExceptionServices;
+using System.Threading;
 using System.Threading.Tasks;
 using DurableTask.Core;
 using Newtonsoft.Json;
@@ -28,6 +30,8 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
         private readonly List<RequestMessage> operationBatch = new List<RequestMessage>();
         private RequestMessage lockRequest = null;
 
+        private DateTime? setTimerFor;
+
         public TaskEntityShim(DurableTaskExtension config, string schedulerId)
             : base(config)
         {
@@ -44,7 +48,15 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
 
         public int NumberEventsToReceive { get; set; }
 
+        public bool TimerFiredToReceive { get; set; }
+
         internal List<RequestMessage> OperationBatch => this.operationBatch;
+
+        private bool NoProgress =>
+            this.NumberEventsToReceive == 0
+            && !this.TimerFiredToReceive
+            && this.lockRequest == null
+            && this.operationBatch.Count == 0;
 
         public void AddOperationToBatch(RequestMessage operationMessage)
         {
@@ -125,6 +137,15 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
                 {
                     throw new EntitySchedulerException("Failed to deserialize entity scheduler state - may be corrupted or wrong version.", e);
                 }
+
+                // if there is a signal waiting to be scheduled, we will start a timer;
+                // take note of that now (we have to be deterministic and set the timer
+                // the same way every time, even if we end up already processing the signal in this iteration)
+                if (this.context.State.LockedBy == null
+                    && this.context.State.TryPeekNextSignalDueTime(out var dueTime))
+                {
+                    this.setTimerFor = dueTime;
+                }
             }
 
             if (serializedInput == null)
@@ -139,12 +160,40 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
 
         public override async Task<string> Execute(OrchestrationContext innerContext, string serializedInput)
         {
-            if (this.operationBatch.Count == 0 && this.lockRequest == null)
+            CancellationTokenSource cts = null;
+            Task timerTask = null;
+
+            if (this.setTimerFor != null)
             {
-                // we are idle after a ContinueAsNew - the batch is empty.
-                // Wait for more messages to get here (via extended sessions)
-                await this.doneProcessingMessages.Task;
+                // to ensure we wake up so we can execute the scheduled signal,
+                // create a timer with a max wait time of 6 days
+                var bound = innerContext.CurrentUtcDateTime + TimeSpan.FromDays(6);
+                if (bound < this.setTimerFor)
+                {
+                    this.setTimerFor = bound;
+                }
+
+                cts = new CancellationTokenSource();
+                timerTask = innerContext.CreateTimer<object>(this.setTimerFor.Value, null, cts.Token);
             }
+
+            if (this.NoProgress)
+            {
+                // we are brand-new coming out of a ContinueAsNew, with nothing to do.
+                // Wait for more events, or for the timer to expire (if there is one).
+
+                if (timerTask == null)
+                {
+                    await this.doneProcessingMessages.Task;
+                }
+                else
+                {
+                    await Task.WhenAny(this.doneProcessingMessages.Task, timerTask);
+                }
+            }
+
+            // We have made progress, so we are now completing the batch
+            // and call continue as new
 
             this.Config.TraceHelper.FunctionStarting(
                 this.context.HubName,
@@ -157,6 +206,23 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
             if (this.NumberEventsToReceive > 0)
             {
                 await this.doneProcessingMessages.Task;
+            }
+
+            // any timer started by this batch is irrelevant now, because we will schedule
+            // a new timer (if needed) right after the continue as new.
+            // However, we have to be careful about our interaction with event delivery by DTFx:
+            // if the timer already fired, we need to receive it so we don't finish Execute() before delivery.
+            // if the timer has not already fired, we can just cancel it.
+            if (timerTask != null)
+            {
+                if (this.TimerFiredToReceive)
+                {
+                    await timerTask;
+                }
+                else
+                {
+                    cts.Cancel();
+                }
             }
 
             // Commit the effects of this batch, if

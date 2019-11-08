@@ -2667,6 +2667,55 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask.Tests
         }
 
         /// <summary>
+        /// Test which validates that actors can schedule operations.
+        /// </summary>
+        [Theory]
+        [Trait("Category", PlatformSpecificHelpers.TestCategory)]
+        [InlineData(true, 1)]
+        [InlineData(true, 2)]
+        [InlineData(true, 20)]
+        [InlineData(true, 200)]
+        [InlineData(false, 1)]
+        [InlineData(false, 2)]
+        [InlineData(false, 20)]
+        [InlineData(false, 200)]
+        public async Task DurableEntity_ScheduleOperations(bool extendedSessions, int numSignals)
+        {
+            using (var host = TestHelpers.GetJobHost(
+                this.loggerProvider,
+                nameof(this.DurableEntity_ScheduleOperations),
+                enableExtendedSessions: extendedSessions))
+            {
+                await host.StartAsync();
+
+                var entityId = new EntityId("SchedulerEntity", Guid.NewGuid().ToString("N"));
+                TestEntityClient client = await host.GetEntityClientAsync(entityId, this.output);
+
+                var now = DateTime.UtcNow;
+
+                for (int i = 0; i < numSignals; i++)
+                {
+                    await client.SignalEntity(this.output, now + TimeSpan.FromSeconds(i * (10.0 / numSignals)), i.ToString(), null);
+                }
+
+                var timeout = Debugger.IsAttached ? TimeSpan.FromMinutes(5) : TimeSpan.FromSeconds(30);
+                var state = await client.WaitForEntityState<List<string>>(this.output, timeout, list => list.Count == numSignals);
+
+                this.output.WriteLine(string.Join(", ", state));
+
+                // Under heavy load we can get reordering of the signals, so we sort them before comparing
+                var intlist = state.Select(s => int.Parse(s)).ToList();
+
+                for (int i = 0; i < numSignals; i++)
+                {
+                    Assert.Equal(i, intlist[i]);
+                }
+
+                await host.StopAsync();
+            }
+        }
+
+        /// <summary>
         /// End-to-end test which validates an entity scenario where three "LockedIncrement" orchestrations
         /// concurrently increment a counter saved in blob storage, using a read-modify-write pattern, while holding
         /// a lock on the same entity. This tests that the lock prevents the interleaving of these orchestrations.
@@ -3163,6 +3212,67 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask.Tests
 
                 Assert.Equal(OrchestrationRuntimeStatus.Completed, status?.RuntimeStatus);
                 Assert.Equal(true, status?.Output);
+
+                await host.StopAsync();
+            }
+        }
+
+        /// <summary>
+        /// Test which validates that orchestrations can call a timer after doing a continue as new.
+        /// This is meant to catch regressions of azure/durabletask/#285.
+        /// </summary>
+        [Fact]
+        [Trait("Category", PlatformSpecificHelpers.TestCategory)]
+        public async Task ContinueAsNew_Repro285()
+        {
+            using (var host = TestHelpers.GetJobHost(
+                this.loggerProvider,
+                nameof(this.ContinueAsNew_Repro285),
+                enableExtendedSessions: true))
+            {
+                await host.StartAsync();
+
+                var client = await host.StartOrchestratorAsync(nameof(TestOrchestrations.ContinueAsNew_Repro285), 0, this.output);
+
+                var status = await client.WaitForCompletionAsync(this.output);
+
+                Assert.Equal(OrchestrationRuntimeStatus.Completed, status?.RuntimeStatus);
+                Assert.Equal("ok", status?.Output);
+
+                await host.StopAsync();
+            }
+        }
+
+        /// <summary>
+        /// Test which validates that orchestrations can call a timer and then cancel it if receiving an event instead.
+        /// This is meant to catch regressions of azure/durabletask/#285.
+        /// </summary>
+        [Theory]
+        [Trait("Category", PlatformSpecificHelpers.TestCategory)]
+        [InlineData(true, 20)]
+        [InlineData(false, 20)]
+        public async Task ContinueAsNewMultipleTimersAndEvents(bool extendedSessions, int numSignals)
+        {
+            using (var host = TestHelpers.GetJobHost(
+                this.loggerProvider,
+                nameof(this.ContinueAsNewMultipleTimersAndEvents),
+                enableExtendedSessions: extendedSessions))
+            {
+                await host.StartAsync();
+
+                var client = await host.StartOrchestratorAsync(nameof(TestOrchestrations.ContinueAsNewMultipleTimersAndEvents), numSignals, this.output);
+
+                await Task.Delay(TimeSpan.FromSeconds(10));
+
+                for (int i = numSignals; i > 0; i--)
+                {
+                    await client.RaiseEventAsync($"signal{i}", this.output);
+                }
+
+                var status = await client.WaitForCompletionAsync(this.output, false, false, TimeSpan.FromSeconds(80));
+
+                Assert.Equal(OrchestrationRuntimeStatus.Completed, status?.RuntimeStatus);
+                Assert.Equal("ok", status?.Output);
 
                 await host.StopAsync();
             }

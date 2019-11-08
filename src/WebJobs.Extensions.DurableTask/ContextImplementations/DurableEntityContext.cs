@@ -296,6 +296,16 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
 
         void IDurableEntityContext.SignalEntity(EntityId entity, string operation, object input)
         {
+            this.SignalEntityInternal(entity, null, operation, input);
+        }
+
+        void IDurableEntityContext.SignalEntity(EntityId entity, DateTime scheduledTimeUtc, string operation, object input)
+        {
+            this.SignalEntityInternal(entity, scheduledTimeUtc, operation, input);
+        }
+
+        private void SignalEntityInternal(EntityId entity, DateTime? scheduledTimeUtc, string operation, object input)
+        {
             this.ThrowIfInvalidAccess();
             if (operation == null)
             {
@@ -315,6 +325,7 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask
                 Id = Guid.NewGuid(),
                 IsSignal = true,
                 Operation = operation,
+                ScheduledTime = scheduledTimeUtc,
             };
             if (input != null)
             {
