@@ -16,7 +16,7 @@ namespace Company.Function
             string instanceId = await client.StartNewAsync("HelloOrchestrator", null);
             log.LogInformation($"Started orchestration with ID = '{instanceId}'.");
 
-            var tasks = Enumerable.Range(1, 101)
+            var tasks = Enumerable.Range(1, 100)
                 .Select(i => new { index = i, sortKey = random.Next() })
                 .OrderBy(i => i.sortKey)
                 .Take(10)
